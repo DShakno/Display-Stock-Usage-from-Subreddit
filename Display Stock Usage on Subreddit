@@ -1,0 +1,208 @@
+import numpy as np
+import pandas as pd
+import datetime
+
+import random
+import string
+
+import requests
+import json
+
+from bs4 import BeautifulSoup
+
+from datetime import datetime, timezone, timedelta
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib.pyplot import figure
+
+import pymysql
+
+from array import array
+import mysql.connector
+import flask
+
+def get_pushshift_results(after, before, sub, stock):
+    """ queries pushshift for the most commented on posts in the specified subreddit between the given dates
+    Args:
+        after (int)           : the date that all searches will be after, as a timestamp
+        before (int)          : the date that all searches will be before, as a timestamp
+        sub (str)             : the subreddit to search
+        stock (string)     : name of the desired stock
+    Returns:
+        pushshift_dict (dict) : a dictionary containing all results from the Pushshift query
+    """
+    url = 'https://api.pushshift.io/reddit/search/submission/?q='+str(stock)+'&after='+str(after)+'&before='+str(before)+'&sort=desc&sort_type=num_comments&subreddit='+str(sub)
+
+    #print(url)
+    r = requests.get(url)
+    
+    # avoid JSONDecodeError
+    try:
+        data = json.loads(r.text)
+    #data = r.text
+    #print(type(data))
+        pushshift_dict =  data['data']
+    except:
+        pushshift_dict = dict()
+        
+    return pushshift_dict
+
+def get_random_id():
+    """ creates random id for user
+
+    Returns:
+        id_ (string) : id for user in form of varchar of length 10
+    """
+    letters = string.ascii_lowercase
+    id_ = ''.join(random.choice(letters) for i in range(12))
+    return id_
+
+
+db = pymysql.connect(host='localhost', user= input("Enter Database User") , password= input("Enter Database Password"),
+             db= input("Enter Database Name"),charset='utf8mb4',cursorclass=pymysql.cursors.DictCursor)
+
+# Initiate cursor
+cur = db.cursor()
+
+# Get user_id
+user_id = input("Input User Name: ")
+
+# Set up select statement to get all users
+sql_user_select = "select * from User"
+cur.execute(sql_user_select)
+
+# Create user list
+user_list = []
+
+# Fill user list 
+for row in cur.fetchall():
+    user_list.append(row['User_ID'])
+
+# Set up user validator
+user_exists = False
+
+for user in user_list:
+    if user == user_id:
+        user_exists = True
+
+# if user does not exist in user_list, add to DB
+# if user exists in user_list, show past_searches
+if user_exists == False:
+    # Add user to Users in DB
+    sql_add_user = f'insert into User(User_ID) values("{user_id}")'
+    cur.execute(sql_add_user)
+    # Get History_ID for user
+    history_id = get_random_id()
+    # Create History entry for user
+    sql_add_history = f'insert into History values("{history_id}","{user_id}")'
+    cur.execute(sql_add_history)
+    # Create Past_Searches entry for user
+    sql_add_past_searches = f'insert into Past_Searches values("{user_id}"," ")'
+    cur.execute(sql_add_past_searches)
+    # Create empty list_of_past_searches for User Stock_Names for future use
+    list_of_past_searches = " "
+else:
+    # Retrieve previous stock_names used
+    sql_get_past_searches = f'select Stock_Names from Past_Searches where Search_ID = "{user_id}"'
+    cur.execute(sql_get_past_searches)
+    list_of_past_searches = cur.fetchall()
+    # Inform user of past_searches
+    print(f'Your past searches are {list_of_past_searches[0]["Stock_Names"]}')
+    # Retrieve History_ID for User
+    sql_get_history_id = f'select History_ID from History where User_Name = "{user_id}" '
+    cur.execute(sql_get_history_id)
+    history_id = cur.fetchall()
+    history_id = history_id[0]
+    
+
+# user's desired stock
+desired_stock = input("Input Desired Stock Name: ")
+
+# Update DB with new past_searches
+# if user does not exist in user_list, call directly list_of_past_searches
+# if user exists in user_list, call specific list_of_past_searches
+
+if user_exists == False:
+    past_searches = desired_stock + ", " + list_of_past_searches
+    sql_modify_past_searches = f'update Past_Searches set Stock_Names = "{past_searches}" where Search_ID = "{user_id}"'
+    cur.execute(sql_modify_past_searches)
+else:
+    past_searches = desired_stock + ", " + list_of_past_searches[0]['Stock_Names']
+    sql_modify_past_searches = f'update Past_Searches set Stock_Names = "{past_searches}" where Search_ID = "{user_id}"'
+    cur.execute(sql_modify_past_searches)
+    
+# user's desired search_date
+search_date = input("Input Requested Day as MM/DD/YYY: ")
+date_requested = search_date
+# Convert search_date to datetime
+search_date = datetime.strptime(search_date,'%m/%d/%Y') 
+
+# subreddit to search
+sub = input("Please Entier Desired Subreddit to Search")
+
+# convert search date to timestamps 
+before_ts = int((search_date - datetime(1970, 1, 1)).total_seconds()) + 86400
+after_ts = int((search_date - datetime(1970, 1, 1)).total_seconds()) 
+
+        
+# get occurences of desired_stock on search_date and store results in stock_occurences
+pushshift_results = get_pushshift_results(after_ts, before_ts, sub, desired_stock)
+stock_occurences = len(pushshift_results)
+
+# Add information to DataBase
+# Two different cases due to the formatting of the data
+# With a new user (user_exists = False), history_id directly returns the id
+# With an existing user (user_exists = True), history_id returns a tuple 
+
+# Check if user exists
+if user_exists == False:
+    # Insert data into Information table
+    sql_add_new_info = f'insert into Information values("{history_id}","{desired_stock}","{date_requested}",{stock_occurences})'
+    cur.execute(sql_add_new_info)
+    
+    # Retrieve all data related to desired_stock from correct history_id
+    sql_select_stock_info = f'select Information.Date, Information.Usage from Information where Information.Information_ID = "{history_id}" and Information.Stock_Name = "{desired_stock}" '
+    cur.execute(sql_select_stock_info)   
+elif user_exists == True:
+    # Insert data into Information table
+    sql_add_new_info = f'insert into Information values("{history_id["History_ID"]}","{desired_stock}","{date_requested}",{stock_occurences})'
+    cur.execute(sql_add_new_info)
+    
+    # Retrieve all data related to desired_stock from correct history_id
+    sql_select_stock_info = f'select Information.Date, Information.Usage from Information where Information.Information_ID = "{history_id["History_ID"]}" and Information.Stock_Name = "{desired_stock}" '
+    cur.execute(sql_select_stock_info)
+
+# Insert all data on desired_stock into stock_list
+stock_list = cur.fetchall()
+sns.set()
+
+# Commit DB
+db.commit()
+
+# Close connection
+cur.close()
+
+# Create DataFrame
+df_stock_info = pd.DataFrame(stock_list)
+# Convert all Dates from string format to Datetime to properly plot x axis
+df_stock_info['Date']= pd.to_datetime(df_stock_info['Date'], format = '%m/%d/%Y')
+# Sort dates in order
+df_stock_info = df_stock_info.sort_values('Date')
+# Get rid of duplicate Date entries
+df_stock_info = df_stock_info.drop_duplicates('Date')
+
+# If a new user, no need for a graph
+# Print information out
+# If existing user, create graph and save to pdf
+if len(df_stock_info) == 1:
+    print(f'Usage of {desired_stock} on {date_requested} is {df_stock_info.at[0,"Usage"]}')
+    print(f'Thank you {user_id}. Have a nice day!')
+else:
+    plt.figure(figsize = (12,12))
+    plt.plot(df_stock_info['Date'],df_stock_info['Usage'])
+    plt.xlabel('Date', fontsize = 20)
+    plt.ylabel('Usage', fontsize = 20)
+    plt.title(f'{desired_stock} Usage on {sub}', fontsize = 25)
+    plt.savefig(f'{desired_stock}_Usage.pdf', bbox_inches= 'tight')
+
